@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { createBrowserClient } from '@supabase/ssr'
 
 // Função para obter configuração do Supabase de forma segura
@@ -29,12 +29,22 @@ const config = getSupabaseConfig()
 export const supabase = createBrowserClient(config.url, config.anonKey)
 
 // Server-side Supabase client with service role
-export const supabaseAdmin = createClient(config.url, config.serviceKey, {
+export const supabaseAdmin = createSupabaseClient(config.url, config.serviceKey, {
   auth: {
     autoRefreshToken: false,
     persistSession: false
   }
 })
+
+// Export createClient function for compatibility
+export function createClient() {
+  return createSupabaseClient(config.url, config.serviceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  })
+}
 
 // Database types (will be generated from Supabase)
 export type Database = {

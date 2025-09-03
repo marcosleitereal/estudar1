@@ -2,11 +2,11 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuth } from '@/components/auth/auth-provider'
+import { useAuthContext } from '@/components/auth/auth-provider'
 import { Loader2 } from 'lucide-react'
 
 export default function HomePage() {
-  const { user, loading } = useAuth()
+  const { user, loading } = useAuthContext()
   const router = useRouter()
 
   useEffect(() => {

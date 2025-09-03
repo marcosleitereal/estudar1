@@ -1,47 +1,38 @@
 'use client'
 
 import { createContext, useContext, ReactNode } from 'react'
-import { useAuthState } from '@/hooks/useAuth'
-
-interface User {
-  id: string
-  name: string
-  phone?: string
-  email?: string
-  role: 'user' | 'admin'
-  created_at: string
-  last_login?: string
-}
+import { useAuth, User } from '@/hooks/useAuth'
 
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (userData: User) => void
+  error: string | null
+  isAuthenticated: boolean
+  register: (name: string, email: string, phone: string) => Promise<any>
+  verifyRegistration: (phone: string, code: string) => Promise<any>
+  initiateWhatsAppLogin: (phone: string) => Promise<any>
+  verifyWhatsAppLogin: (phone: string, code: string) => Promise<any>
   logout: () => Promise<void>
-  checkAuth: () => Promise<void>
+  refreshUser: () => Promise<User | null>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-export function useAuth() {
-  const context = useContext(AuthContext)
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider')
-  }
-  return context
-}
-
-interface AuthProviderProps {
-  children: ReactNode
-}
-
-export function AuthProvider({ children }: AuthProviderProps) {
-  const auth = useAuthState()
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const auth = useAuth()
 
   return (
     <AuthContext.Provider value={auth}>
       {children}
     </AuthContext.Provider>
   )
+}
+
+export function useAuthContext() {
+  const context = useContext(AuthContext)
+  if (context === undefined) {
+    throw new Error('useAuthContext must be used within an AuthProvider')
+  }
+  return context
 }
 

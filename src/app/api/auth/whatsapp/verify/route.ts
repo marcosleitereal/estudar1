@@ -1,167 +1,127 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-
-// Função para obter configuração do Supabase de forma segura
-function getSupabaseConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    console.warn('Supabase configuration missing in WhatsApp verify API. Using fallback values.')
-    return {
-      url: 'https://placeholder.supabase.co',
-      serviceKey: 'placeholder-service-key'
-    }
-  }
-
-  return {
-    url: supabaseUrl,
-    serviceKey: supabaseServiceKey
-  }
-}
+import { createClient } from '@/lib/supabase'
+import { v4 as uuidv4 } from 'uuid'
 
 export async function POST(request: NextRequest) {
   try {
-    const { verification_id, code } = await request.json()
+    const { phone, code } = await request.json()
 
-    // Validações básicas
-    if (!verification_id || !code) {
+    if (!phone || !code) {
       return NextResponse.json(
-        { success: false, message: 'ID de verificação e código são obrigatórios' },
+        { error: 'Telefone e código são obrigatórios' },
         { status: 400 }
       )
     }
 
-    // Validar formato do código (6 dígitos)
-    if (!/^\d{6}$/.test(code)) {
-      return NextResponse.json(
-        { success: false, message: 'Código deve ter 6 dígitos' },
-        { status: 400 }
-      )
+    // Formatar telefone
+    const cleanPhone = phone.replace(/\D/g, '')
+    let formattedPhone = cleanPhone
+    if (!formattedPhone.startsWith('55')) {
+      formattedPhone = '55' + formattedPhone
     }
+    formattedPhone = '+' + formattedPhone
 
-    const userAgent = request.headers.get('user-agent') || 'Unknown'
-    const clientIP = request.headers.get('x-forwarded-for') || 
-                    request.headers.get('x-real-ip') || 
-                    'unknown'
+    const supabase = createClient()
 
-    console.log(`[WasenderAPI] Verificando código WhatsApp - ID: ${verification_id}, Code: ${code}`)
-
-    const config = getSupabaseConfig()
-    
-    if (config.url === 'https://placeholder.supabase.co') {
-      return NextResponse.json({
-        success: false,
-        message: 'Database not configured'
-      })
-    }
-
-    const supabase = createClient(config.url, config.serviceKey)
-
-    // Buscar sessão de verificação válida
-    const { data: session, error: sessionError } = await supabase
-      .from('whatsapp_sessions')
-      .select('*')
-      .eq('verification_code', code)
-      .gt('expires_at', new Date().toISOString())
-      .eq('is_verified', false)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single()
-
-    if (sessionError || !session) {
-      return NextResponse.json(
-        { success: false, message: 'Código inválido ou expirado' },
-        { status: 400 }
-      )
-    }
-
-    // Marcar sessão como verificada
-    await supabase
-      .from('whatsapp_sessions')
-      .update({ is_verified: true })
-      .eq('id', session.id)
-
-    // Buscar dados do usuário
-    const { data: user, error: userError } = await supabase
+    // Buscar usuário pelo telefone e código
+    const { data: user, error } = await supabase
       .from('users')
       .select('*')
-      .eq('id', session.user_id)
+      .eq('phone', formattedPhone)
+      .eq('verification_code', code)
+      .eq('is_verified', true)
       .single()
 
-    if (userError || !user) {
+    if (error || !user) {
       return NextResponse.json(
-        { success: false, message: 'Usuário não encontrado' },
-        { status: 404 }
+        { error: 'Código inválido ou usuário não encontrado' },
+        { status: 400 }
+      )
+    }
+
+    // Verificar se código não expirou (10 minutos)
+    const updatedAt = new Date(user.updated_at)
+    const now = new Date()
+    const diffMinutes = (now.getTime() - updatedAt.getTime()) / (1000 * 60)
+
+    if (diffMinutes > 10) {
+      return NextResponse.json(
+        { error: 'Código expirado. Solicite um novo código.' },
+        { status: 400 }
+      )
+    }
+
+    // Gerar novo token de sessão
+    const sessionToken = uuidv4()
+
+    // Atualizar usuário com novo token e último login
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({
+        session_token: sessionToken,
+        verification_code: null,
+        last_login: now.toISOString(),
+        updated_at: now.toISOString()
+      })
+      .eq('id', user.id)
+      .select()
+      .single()
+
+    if (updateError) {
+      console.error('Erro ao atualizar usuário:', updateError)
+      return NextResponse.json(
+        { error: 'Erro interno do servidor' },
+        { status: 500 }
       )
     }
 
     // Verificar status do trial
-    const now = new Date()
-    const trialEnd = new Date(user.trial_end_date)
-    const isTrialExpired = now > trialEnd && user.subscription_status === 'trial'
+    const trialEndDate = updatedUser.trial_end_date ? new Date(updatedUser.trial_end_date) : null
+    const isTrialExpired = trialEndDate ? now > trialEndDate : false
 
-    if (isTrialExpired) {
-      await supabase
-        .from('users')
-        .update({ 
-          subscription_status: 'expired',
-          is_trial_expired: true 
-        })
-        .eq('id', user.id)
-      
-      user.subscription_status = 'expired'
-      user.is_trial_expired = true
-    }
-
-    // Criar token de sessão
-    const sessionToken = Buffer.from(JSON.stringify({
-      userId: user.id,
-      phone: user.phone,
-      name: user.name,
-      role: user.role,
-      subscriptionStatus: user.subscription_status,
-      trialEndDate: user.trial_end_date,
-      timestamp: Date.now()
-    })).toString('base64')
-
-    // Criar resposta com cookie de sessão
+    // Criar resposta com dados do usuário
     const response = NextResponse.json({
       success: true,
-      message: 'Login realizado com sucesso',
+      message: 'Login realizado com sucesso!',
       user: {
-        id: user.id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-        subscriptionStatus: user.subscription_status,
-        trialEndDate: user.trial_end_date,
-        isTrialExpired: user.is_trial_expired,
-        created_at: user.created_at
-      },
-      provider: 'wasender'
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        phone: updatedUser.phone,
+        subscription_status: updatedUser.subscription_status,
+        trial_end_date: updatedUser.trial_end_date,
+        is_trial_expired: isTrialExpired,
+        is_premium: updatedUser.is_premium || updatedUser.subscription_status === 'active',
+        stats: updatedUser.stats || {
+          quizzes_completed: 0,
+          flashcards_reviewed: 0,
+          study_time_minutes: 0,
+          last_activity: now.toISOString()
+        }
+      }
     })
 
-    // Definir cookie de sessão (httpOnly para segurança)
+    // Definir cookie de sessão
     response.cookies.set('session_token', sessionToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60, // 30 dias
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
       path: '/'
     })
 
     return response
 
   } catch (error) {
-    console.error('[WasenderAPI] Erro na API verify WhatsApp:', error)
+    console.error('Erro na verificação:', error)
     return NextResponse.json(
-      { success: false, message: 'Erro interno do servidor' },
+      { error: 'Erro interno do servidor' },
       { status: 500 }
     )
   }
 }
 
+// Método OPTIONS para CORS
 export async function OPTIONS() {
   return new NextResponse(null, {
     status: 200,

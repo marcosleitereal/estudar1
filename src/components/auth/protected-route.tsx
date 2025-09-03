@@ -2,62 +2,71 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuth } from './auth-provider'
-import { Loader2 } from 'lucide-react'
+import { useAuthContext } from '@/components/auth/auth-provider'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
-  requireAdmin?: boolean
-  redirectTo?: string
+  requirePremium?: boolean
+  adminOnly?: boolean
 }
 
 export function ProtectedRoute({ 
   children, 
-  requireAdmin = false, 
-  redirectTo = '/auth/whatsapp' 
+  requirePremium = false, 
+  adminOnly = false 
 }: ProtectedRouteProps) {
-  const { user, loading } = useAuth()
+  const { user, loading, isAuthenticated } = useAuthContext()
   const router = useRouter()
 
   useEffect(() => {
     if (!loading) {
-      if (!user) {
-        // Usuário não logado
-        router.push(redirectTo)
+      // Não autenticado - redirecionar para login
+      if (!isAuthenticated) {
+        router.push('/auth/whatsapp')
         return
       }
 
-      if (requireAdmin && user.role !== 'admin') {
-        // Usuário não é admin mas rota requer admin
+      // Verificar se requer admin
+      if (adminOnly && user?.role !== 'admin') {
         router.push('/dashboard')
         return
       }
+
+      // Verificar se requer premium
+      if (requirePremium && !user?.is_premium) {
+        // Se trial expirado, redirecionar para pagamento
+        if (user?.is_trial_expired) {
+          router.push('/payment')
+          return
+        }
+        // Se ainda em trial, permitir acesso mas mostrar banner
+      }
     }
-  }, [user, loading, requireAdmin, router, redirectTo])
+  }, [user, loading, isAuthenticated, requirePremium, adminOnly, router])
 
   // Mostrar loading enquanto verifica autenticação
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="mx-auto h-8 w-8 animate-spin text-blue-600" />
-          <p className="mt-2 text-sm text-gray-600">Verificando autenticação...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Verificando autenticação...</p>
         </div>
       </div>
     )
   }
 
-  // Não mostrar conteúdo se não estiver autenticado
-  if (!user) {
+  // Não mostrar conteúdo se não autenticado
+  if (!isAuthenticated) {
     return null
   }
 
-  // Não mostrar conteúdo se requer admin mas usuário não é admin
-  if (requireAdmin && user.role !== 'admin') {
+  // Não mostrar conteúdo se requer admin e usuário não é admin
+  if (adminOnly && user?.role !== 'admin') {
     return null
   }
 
-  // Usuário autenticado e autorizado
+  // Mostrar conteúdo protegido
   return <>{children}</>
 }
 

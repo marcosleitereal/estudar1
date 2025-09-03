@@ -1,151 +1,87 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { WasenderAPI } from '../../../../../../lib/auth/wasender-api'
-
-// Função para obter configuração do Supabase de forma segura
-function getSupabaseConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    console.warn('Supabase configuration missing in WhatsApp auth API. Using fallback values.')
-    return {
-      url: 'https://placeholder.supabase.co',
-      serviceKey: 'placeholder-service-key'
-    }
-  }
-
-  return {
-    url: supabaseUrl,
-    serviceKey: supabaseServiceKey
-  }
-}
+import { createClient } from '@/lib/supabase'
+import { WasenderAPI } from '@/lib/auth/wasender-api'
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, phone } = await request.json()
+    const { phone } = await request.json()
 
-    // Validações básicas
-    if (!name || !phone) {
+    if (!phone) {
       return NextResponse.json(
-        { success: false, message: 'Nome e telefone são obrigatórios' },
+        { error: 'Número de telefone é obrigatório' },
         { status: 400 }
       )
     }
 
-    // Validar formato do telefone brasileiro
-    const phoneRegex = /^(\+55|55)?[\s-]?(\(?[1-9]{2}\)?[\s-]?)?[9]?[0-9]{4}[\s-]?[0-9]{4}$/
-    if (!phoneRegex.test(phone.replace(/\D/g, ''))) {
-      return NextResponse.json(
-        { success: false, message: 'Formato de telefone inválido' },
-        { status: 400 }
-      )
-    }
-
+    // Limpar e formatar telefone
     const cleanPhone = phone.replace(/\D/g, '')
-    const clientIP = request.headers.get('x-forwarded-for') || 
-                    request.headers.get('x-real-ip') || 
-                    'unknown'
+    let formattedPhone = cleanPhone
 
-    console.log(`[WasenderAPI] Iniciando login WhatsApp para ${name} (${cleanPhone}) - IP: ${clientIP}`)
-
-    const config = getSupabaseConfig()
-    
-    if (config.url === 'https://placeholder.supabase.co') {
-      return NextResponse.json({
-        success: false,
-        message: 'Database not configured'
-      })
+    // Adicionar +55 se não tiver
+    if (!formattedPhone.startsWith('55')) {
+      formattedPhone = '55' + formattedPhone
     }
+    formattedPhone = '+' + formattedPhone
 
-    const supabase = createClient(config.url, config.serviceKey)
+    const supabase = createClient()
 
-    // Gerar código de verificação
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString()
-
-    // Verificar se usuário já existe
-    let { data: existingUser, error: userError } = await supabase
+    // Verificar se usuário existe e está verificado
+    const { data: user, error } = await supabase
       .from('users')
       .select('*')
-      .eq('phone', cleanPhone)
+      .eq('phone', formattedPhone)
+      .eq('is_verified', true)
       .single()
 
-    let userId: string
-
-    if (existingUser) {
-      userId = existingUser.id
-      
-      // Atualizar último login e nome se necessário
-      await supabase
-        .from('users')
-        .update({ 
-          last_login: new Date().toISOString(),
-          name: name.trim() // Atualizar nome caso tenha mudado
-        })
-        .eq('id', userId)
-    } else {
-      // Criar novo usuário
-      const { data: newUser, error: createError } = await supabase
-        .from('users')
-        .insert({
-          email: `${cleanPhone}@whatsapp.temp`, // Email temporário
-          name: name.trim(),
-          phone: cleanPhone,
-          role: 'student',
-          trial_start_date: new Date().toISOString(),
-          trial_end_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), // 3 dias
-          subscription_status: 'trial'
-        })
-        .select()
-        .single()
-
-      if (createError) {
-        console.error('Error creating user:', createError)
-        return NextResponse.json(
-          { success: false, message: 'Falha ao criar usuário' },
-          { status: 500 }
-        )
-      }
-
-      userId = newUser.id
+    if (error || !user) {
+      return NextResponse.json(
+        { 
+          error: 'Usuário não encontrado. Faça seu cadastro primeiro.',
+          needsRegistration: true
+        },
+        { status: 404 }
+      )
     }
 
-    // Criar sessão de verificação
+    // Gerar novo código de verificação para login
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString()
+    
+    // Atualizar código no banco
     await supabase
-      .from('whatsapp_sessions')
-      .insert({
-        user_id: userId,
-        phone: cleanPhone,
+      .from('users')
+      .update({
         verification_code: verificationCode,
-        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutos
+        updated_at: new Date().toISOString()
       })
+      .eq('id', user.id)
 
     // Enviar código via WhatsApp
-    const wasender = new WasenderAPI()
-    const messageResult = await wasender.sendMessage(
-      cleanPhone,
-      `🔐 Seu código de verificação do Estudar.Pro é: *${verificationCode}*\n\nEste código expira em 10 minutos.`
-    )
-
-    if (!messageResult.success) {
-      console.error('Failed to send WhatsApp message:', messageResult.error)
+    try {
+      const wasender = new WasenderAPI()
+      const message = `🎓 *Estudar.Pro - Login*\n\nOlá ${user.name}!\n\nSeu código de acesso é: *${verificationCode}*\n\nEste código expira em 10 minutos.\n\n🔐 Use este código para fazer login.`
+      
+      await wasender.sendMessage(formattedPhone, message)
+    } catch (smsError) {
+      console.error('Erro ao enviar WhatsApp:', smsError)
       return NextResponse.json(
-        { success: false, message: 'Falha ao enviar código de verificação' },
+        { error: 'Erro ao enviar código via WhatsApp' },
         { status: 500 }
       )
     }
 
     return NextResponse.json({
       success: true,
-      message: 'Código de verificação enviado via WhatsApp',
-      verification_id: `${userId}_${Date.now()}`,
-      provider: 'wasender'
+      message: `Código de acesso enviado para ${formattedPhone}`,
+      data: {
+        phone: formattedPhone,
+        userName: user.name
+      }
     })
 
   } catch (error) {
-    console.error('[WasenderAPI] Erro na API initiate WhatsApp:', error)
+    console.error('Erro ao iniciar login:', error)
     return NextResponse.json(
-      { success: false, message: 'Erro interno do servidor' },
+      { error: 'Erro interno do servidor' },
       { status: 500 }
     )
   }

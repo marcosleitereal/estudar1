@@ -2,438 +2,417 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm } from 'react-hook-form'
-import * as z from 'zod'
-
+import { useAuthContext } from '@/components/auth/auth-provider'
+import { ProtectedRoute } from '@/components/auth/protected-route'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useToast } from '@/hooks/use-toast'
-import { authService, User } from '../../../lib/auth/supabase-auth'
-import { Loader2, Camera, User as UserIcon, Lock, Phone, Mail, Calendar, ArrowLeft, LogOut } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { 
+  User as UserIcon, 
+  Phone, 
+  Mail, 
+  Calendar, 
+  ArrowLeft, 
+  LogOut,
+  Crown,
+  Clock,
+  BarChart3,
+  BookOpen,
+  Target
+} from 'lucide-react'
 import Link from 'next/link'
 
-const profileSchema = z.object({
-  name: z.string().min(2, 'Nome deve ter pelo menos 2 caracteres'),
-  phone: z.string().optional(),
-})
-
-const passwordSchema = z.object({
-  currentPassword: z.string().min(6, 'Senha atual é obrigatória'),
-  newPassword: z.string().min(6, 'Nova senha deve ter pelo menos 6 caracteres'),
-  confirmPassword: z.string().min(6, 'Confirmação de senha é obrigatória'),
-}).refine((data) => data.newPassword === data.confirmPassword, {
-  message: "Senhas não coincidem",
-  path: ["confirmPassword"],
-})
-
-type ProfileFormData = z.infer<typeof profileSchema>
-type PasswordFormData = z.infer<typeof passwordSchema>
-
 export default function ProfilePage() {
-  const [user, setUser] = useState<User | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const { user, loading, logout, refreshUser } = useAuthContext()
   const [isUpdating, setIsUpdating] = useState(false)
-  const [isChangingPassword, setIsChangingPassword] = useState(false)
-  const [avatarFile, setAvatarFile] = useState<File | null>(null)
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
-  
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    phone: ''
+  })
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
   const router = useRouter()
-  const { toast } = useToast()
-
-  const profileForm = useForm<ProfileFormData>({
-    resolver: zodResolver(profileSchema),
-  })
-
-  const passwordForm = useForm<PasswordFormData>({
-    resolver: zodResolver(passwordSchema),
-  })
 
   // Carregar dados do usuário
   useEffect(() => {
-    loadUserData()
-  }, [])
-
-  const loadUserData = async () => {
-    try {
-      const currentUser = await authService.getCurrentUser()
-      if (!currentUser) {
-        router.push('/auth/login')
-        return
-      }
-
-      setUser(currentUser)
-      profileForm.reset({
-        name: currentUser.name,
-        phone: currentUser.phone || '',
+    if (user) {
+      setFormData({
+        name: user.name || '',
+        email: user.email || '',
+        phone: user.phone || ''
       })
-    } catch (error) {
-      console.error('Erro ao carregar dados do usuário:', error)
-      toast({
-        title: 'Erro',
-        description: 'Erro ao carregar dados do usuário',
-        variant: 'destructive',
-      })
-    } finally {
-      setIsLoading(false)
     }
-  }
+  }, [user])
 
-  // Atualizar perfil
-  const onUpdateProfile = async (data: ProfileFormData) => {
+  const handleUpdateProfile = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setSuccess('')
     setIsUpdating(true)
 
     try {
-      let avatarUrl = user?.avatar_url
-
-      // Upload do avatar se houver
-      if (avatarFile) {
-        const uploadResult = await authService.uploadAvatar(avatarFile)
-        if (uploadResult.error) {
-          throw new Error(uploadResult.error.message)
-        }
-        avatarUrl = uploadResult.url
-      }
-
-      // Atualizar perfil
-      const result = await authService.updateProfile({
-        name: data.name,
-        phone: data.phone || undefined,
-        avatar_url: avatarUrl,
+      const response = await fetch('/api/user/update-profile', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify(formData)
       })
 
-      if (result.error) {
-        throw new Error(result.error.message)
+      const data = await response.json()
+
+      if (response.ok && data.success) {
+        setSuccess('Perfil atualizado com sucesso!')
+        await refreshUser()
+      } else {
+        setError(data.error || 'Erro ao atualizar perfil')
       }
-
-      setUser(result.user)
-      setAvatarFile(null)
-      setAvatarPreview(null)
-
-      toast({
-        title: 'Perfil atualizado!',
-        description: 'Suas informações foram atualizadas com sucesso.',
-      })
     } catch (error) {
-      toast({
-        title: 'Erro ao atualizar perfil',
-        description: error instanceof Error ? error.message : 'Erro desconhecido',
-        variant: 'destructive',
-      })
+      setError('Erro ao atualizar perfil')
     } finally {
       setIsUpdating(false)
     }
   }
 
-  // Alterar senha
-  const onChangePassword = async (data: PasswordFormData) => {
-    setIsChangingPassword(true)
-
-    try {
-      // Primeiro, verificar senha atual fazendo login
-      const loginResult = await authService.login(user!.email, data.currentPassword)
-      if (loginResult.error) {
-        throw new Error('Senha atual incorreta')
-      }
-
-      // Atualizar senha
-      const result = await authService.updatePassword(data.newPassword)
-      if (result.error) {
-        throw new Error(result.error.message)
-      }
-
-      passwordForm.reset()
-
-      toast({
-        title: 'Senha alterada!',
-        description: 'Sua senha foi alterada com sucesso.',
-      })
-    } catch (error) {
-      toast({
-        title: 'Erro ao alterar senha',
-        description: error instanceof Error ? error.message : 'Erro desconhecido',
-        variant: 'destructive',
-      })
-    } finally {
-      setIsChangingPassword(false)
-    }
+  const handleLogout = async () => {
+    await logout()
+    router.push('/')
   }
 
-  // Selecionar avatar
-  const handleAvatarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB
-        toast({
-          title: 'Arquivo muito grande',
-          description: 'A imagem deve ter no máximo 5MB',
-          variant: 'destructive',
-        })
-        return
-      }
-
-      setAvatarFile(file)
-      
-      // Criar preview
-      const reader = new FileReader()
-      reader.onload = (e) => {
-        setAvatarPreview(e.target?.result as string)
-      }
-      reader.readAsDataURL(file)
-    }
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric'
+    })
   }
 
-  if (isLoading) {
+  const getSubscriptionBadge = () => {
+    if (!user) return null
+
+    if (user.subscription_status === 'active') {
+      return <Badge className="bg-green-100 text-green-800"><Crown className="w-3 h-3 mr-1" />Premium</Badge>
+    }
+    
+    if (user.subscription_status === 'trial') {
+      return <Badge variant="outline"><Clock className="w-3 h-3 mr-1" />Trial ({user.days_remaining} dias)</Badge>
+    }
+    
+    if (user.subscription_status === 'expired') {
+      return <Badge variant="destructive">Expirado</Badge>
+    }
+
+    return <Badge variant="secondary">Gratuito</Badge>
+  }
+
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin" />
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Carregando perfil...</p>
+        </div>
       </div>
     )
   }
 
-  if (!user) {
-    return null
-  }
-
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <Link href="/dashboard" className="text-2xl font-bold text-primary">
-              Estudar.Pro
-            </Link>
-          </div>
-          
-          <div className="flex items-center space-x-4">
-            <div className="text-sm text-muted-foreground">
-              {user.name}
+    <ProtectedRoute>
+      <div className="min-h-screen bg-background">
+        {/* Header */}
+        <header className="border-b">
+          <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <Link href="/dashboard" className="text-2xl font-bold text-primary">
+                Estudar.Pro
+              </Link>
             </div>
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => router.push('/dashboard')}
-            >
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Voltar
-            </Button>
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={async () => {
-                await authService.logout()
-                router.push('/')
-              }}
-            >
-              <LogOut className="h-4 w-4 mr-2" />
-              Sair
-            </Button>
+            
+            <div className="flex items-center space-x-4">
+              <div className="text-sm text-muted-foreground">
+                {user?.name || 'Usuário'}
+              </div>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => router.push('/dashboard')}
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Voltar
+              </Button>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={handleLogout}
+              >
+                <LogOut className="h-4 w-4 mr-2" />
+                Sair
+              </Button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main Content */}
-      <div className="container mx-auto py-8 px-4">
-        <div className="max-w-4xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold">Meu Perfil</h1>
-            <p className="text-muted-foreground">
-              Gerencie suas informações pessoais e configurações de conta
-            </p>
-          </div>
+        {/* Main Content */}
+        <div className="container mx-auto py-8 px-4">
+          <div className="max-w-4xl mx-auto">
+            <div className="mb-8">
+              <h1 className="text-3xl font-bold">Meu Perfil</h1>
+              <p className="text-muted-foreground">
+                Gerencie suas informações pessoais e acompanhe seu progresso
+              </p>
+            </div>
 
-          <Tabs defaultValue="profile" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="profile">Informações Pessoais</TabsTrigger>
-              <TabsTrigger value="security">Segurança</TabsTrigger>
-            </TabsList>
+            <Tabs defaultValue="profile" className="space-y-6">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="profile">Informações Pessoais</TabsTrigger>
+                <TabsTrigger value="stats">Estatísticas</TabsTrigger>
+                <TabsTrigger value="subscription">Assinatura</TabsTrigger>
+              </TabsList>
 
-            <TabsContent value="profile">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <UserIcon className="h-5 w-5" />
-                    Informações Pessoais
-                  </CardTitle>
-                  <CardDescription>
-                    Atualize suas informações pessoais e foto de perfil
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  {/* Avatar */}
-                  <div className="flex items-center gap-6">
-                    <div className="relative">
+              <TabsContent value="profile">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <UserIcon className="h-5 w-5" />
+                      Informações Pessoais
+                    </CardTitle>
+                    <CardDescription>
+                      Atualize suas informações pessoais
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* Avatar e Info Básica */}
+                    <div className="flex items-center gap-6">
                       <Avatar className="h-24 w-24">
-                        <AvatarImage 
-                          src={avatarPreview || user.avatar_url} 
-                          alt={user.name} 
-                        />
-                        <AvatarFallback className="text-lg">
-                          {user.name.charAt(0).toUpperCase()}
+                        <AvatarFallback className="text-lg bg-blue-100 text-blue-600">
+                          {user?.name?.charAt(0).toUpperCase() || 'U'}
                         </AvatarFallback>
                       </Avatar>
-                      <label 
-                        htmlFor="avatar-upload"
-                        className="absolute -bottom-2 -right-2 bg-primary text-primary-foreground rounded-full p-2 cursor-pointer hover:bg-primary/90 transition-colors"
-                      >
-                        <Camera className="h-4 w-4" />
-                      </label>
-                      <input
-                        id="avatar-upload"
-                        type="file"
-                        accept="image/*"
-                        onChange={handleAvatarChange}
-                        className="hidden"
-                      />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold">{user.name}</h3>
-                      <p className="text-sm text-muted-foreground">{user.email}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {user.role === 'admin' ? 'Administrador' : 'Estudante'}
-                        {user.isPremium && ' • Premium'}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Formulário de perfil */}
-                  <form onSubmit={profileForm.handleSubmit(onUpdateProfile)} className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="name">Nome completo</Label>
-                        <Input
-                          id="name"
-                          {...profileForm.register('name')}
-                          disabled={isUpdating}
-                        />
-                        {profileForm.formState.errors.name && (
-                          <p className="text-sm text-destructive">
-                            {profileForm.formState.errors.name.message}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="phone">Telefone</Label>
-                        <Input
-                          id="phone"
-                          type="tel"
-                          placeholder="(11) 99999-9999"
-                          {...profileForm.register('phone')}
-                          disabled={isUpdating}
-                        />
-                        {profileForm.formState.errors.phone && (
-                          <p className="text-sm text-destructive">
-                            {profileForm.formState.errors.phone.message}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Email</Label>
+                        <h3 className="font-semibold text-lg">{user?.name}</h3>
                         <div className="flex items-center gap-2">
                           <Mail className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm text-muted-foreground">{user.email}</span>
+                          <span className="text-sm text-muted-foreground">{user?.email}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Phone className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm text-muted-foreground">{user?.phone}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {getSubscriptionBadge()}
+                          {user?.role === 'admin' && (
+                            <Badge variant="secondary">Administrador</Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Formulário de atualização */}
+                    <form onSubmit={handleUpdateProfile} className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="name">Nome completo</Label>
+                          <Input
+                            id="name"
+                            value={formData.name}
+                            onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                            disabled={isUpdating}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label htmlFor="email">Email</Label>
+                          <Input
+                            id="email"
+                            type="email"
+                            value={formData.email}
+                            onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                            disabled={isUpdating}
+                          />
                         </div>
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Membro desde</Label>
+                        <Label htmlFor="phone">WhatsApp</Label>
+                        <Input
+                          id="phone"
+                          type="tel"
+                          value={formData.phone}
+                          onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
+                          disabled={isUpdating}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Usado para login e notificações
+                        </p>
+                      </div>
+
+                      {error && (
+                        <Alert variant="destructive">
+                          <AlertDescription>{error}</AlertDescription>
+                        </Alert>
+                      )}
+
+                      {success && (
+                        <Alert>
+                          <AlertDescription>{success}</AlertDescription>
+                        </Alert>
+                      )}
+
+                      <Button type="submit" disabled={isUpdating}>
+                        {isUpdating ? 'Salvando...' : 'Salvar Alterações'}
+                      </Button>
+                    </form>
+
+                    {/* Informações adicionais */}
+                    <div className="pt-4 border-t">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                         <div className="flex items-center gap-2">
                           <Calendar className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-sm text-muted-foreground">
-                            {new Date(user.created_at).toLocaleDateString('pt-BR')}
+                          <span className="text-muted-foreground">
+                            Membro desde: {user?.created_at ? formatDate(user.created_at) : 'N/A'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Clock className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-muted-foreground">
+                            Último login: {user?.last_login ? formatDate(user.last_login) : 'Primeiro acesso'}
                           </span>
                         </div>
                       </div>
                     </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
 
-                    <Button type="submit" disabled={isUpdating}>
-                      {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Salvar Alterações
-                    </Button>
-                  </form>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="security">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Lock className="h-5 w-5" />
-                    Segurança da Conta
-                  </CardTitle>
-                  <CardDescription>
-                    Altere sua senha para manter sua conta segura
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={passwordForm.handleSubmit(onChangePassword)} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="currentPassword">Senha atual</Label>
-                      <Input
-                        id="currentPassword"
-                        type="password"
-                        {...passwordForm.register('currentPassword')}
-                        disabled={isChangingPassword}
-                      />
-                      {passwordForm.formState.errors.currentPassword && (
-                        <p className="text-sm text-destructive">
-                          {passwordForm.formState.errors.currentPassword.message}
-                        </p>
+              <TabsContent value="stats">
+                <div className="grid gap-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <BarChart3 className="h-5 w-5" />
+                        Estatísticas de Estudo
+                      </CardTitle>
+                      <CardDescription>
+                        Acompanhe seu progresso e desempenho
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="text-center p-4 bg-blue-50 rounded-lg">
+                          <BookOpen className="h-8 w-8 text-blue-600 mx-auto mb-2" />
+                          <div className="text-2xl font-bold text-blue-600">
+                            {user?.stats?.quizzes_completed || 0}
+                          </div>
+                          <div className="text-sm text-muted-foreground">Quiz Realizados</div>
+                        </div>
+                        
+                        <div className="text-center p-4 bg-green-50 rounded-lg">
+                          <Target className="h-8 w-8 text-green-600 mx-auto mb-2" />
+                          <div className="text-2xl font-bold text-green-600">
+                            {user?.stats?.flashcards_reviewed || 0}
+                          </div>
+                          <div className="text-sm text-muted-foreground">Flashcards Revisados</div>
+                        </div>
+                        
+                        <div className="text-center p-4 bg-purple-50 rounded-lg">
+                          <Clock className="h-8 w-8 text-purple-600 mx-auto mb-2" />
+                          <div className="text-2xl font-bold text-purple-600">
+                            {Math.round((user?.stats?.study_time_minutes || 0) / 60)}h
+                          </div>
+                          <div className="text-sm text-muted-foreground">Tempo de Estudo</div>
+                        </div>
+                      </div>
+                      
+                      {user?.stats?.last_activity && (
+                        <div className="mt-6 pt-4 border-t">
+                          <p className="text-sm text-muted-foreground">
+                            Última atividade: {formatDate(user.stats.last_activity)}
+                          </p>
+                        </div>
                       )}
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="subscription">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Crown className="h-5 w-5" />
+                      Assinatura
+                    </CardTitle>
+                    <CardDescription>
+                      Gerencie sua assinatura e período de teste
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                      <div>
+                        <h3 className="font-semibold">Status da Assinatura</h3>
+                        <p className="text-sm text-muted-foreground">
+                          {user?.subscription_status === 'active' && 'Assinatura Premium Ativa'}
+                          {user?.subscription_status === 'trial' && `Período de Teste (${user.days_remaining} dias restantes)`}
+                          {user?.subscription_status === 'expired' && 'Assinatura Expirada'}
+                          {user?.subscription_status === 'cancelled' && 'Assinatura Cancelada'}
+                        </p>
+                      </div>
+                      <div>
+                        {getSubscriptionBadge()}
+                      </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="newPassword">Nova senha</Label>
-                      <Input
-                        id="newPassword"
-                        type="password"
-                        {...passwordForm.register('newPassword')}
-                        disabled={isChangingPassword}
-                      />
-                      {passwordForm.formState.errors.newPassword && (
-                        <p className="text-sm text-destructive">
-                          {passwordForm.formState.errors.newPassword.message}
-                        </p>
-                      )}
-                    </div>
+                    {user?.subscription_status === 'trial' && (
+                      <Alert>
+                        <Clock className="h-4 w-4" />
+                        <AlertDescription>
+                          Você tem {user.days_remaining} dias restantes no seu período de teste gratuito.
+                          {user.days_remaining <= 1 && ' Assine agora para continuar usando todas as funcionalidades!'}
+                        </AlertDescription>
+                      </Alert>
+                    )}
 
-                    <div className="space-y-2">
-                      <Label htmlFor="confirmPassword">Confirmar nova senha</Label>
-                      <Input
-                        id="confirmPassword"
-                        type="password"
-                        {...passwordForm.register('confirmPassword')}
-                        disabled={isChangingPassword}
-                      />
-                      {passwordForm.formState.errors.confirmPassword && (
-                        <p className="text-sm text-destructive">
-                          {passwordForm.formState.errors.confirmPassword.message}
-                        </p>
-                      )}
-                    </div>
+                    {user?.subscription_status === 'expired' && (
+                      <Alert variant="destructive">
+                        <AlertDescription>
+                          Seu período de teste expirou. Assine agora para continuar usando a plataforma.
+                        </AlertDescription>
+                      </Alert>
+                    )}
 
-                    <Button type="submit" disabled={isChangingPassword}>
-                      {isChangingPassword && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      Alterar Senha
-                    </Button>
-                  </form>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
+                    {(user?.subscription_status === 'trial' || user?.subscription_status === 'expired') && (
+                      <Button 
+                        onClick={() => router.push('/payment')}
+                        className="w-full"
+                      >
+                        <Crown className="h-4 w-4 mr-2" />
+                        Assinar Premium - R$ 19,90/mês
+                      </Button>
+                    )}
+
+                    {user?.trial_start_date && (
+                      <div className="text-sm text-muted-foreground space-y-1">
+                        <p>Período de teste iniciado: {formatDate(user.trial_start_date)}</p>
+                        {user.trial_end_date && (
+                          <p>Período de teste termina: {formatDate(user.trial_end_date)}</p>
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </div>
         </div>
       </div>
-    </div>
+    </ProtectedRoute>
   )
 }
 
